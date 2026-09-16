@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use Rvbbit Ghost in published research, cite this repository."
+title: "Rvbbit Ghost"
+type: software
+version: 0.1.0
+date-released: 2026-09-17
+authors:
+  - name: "buter-chkalova"
+    website: "https://github.com/buter-chkalova"
+repository-code: "https://github.com/buter-chkalova/rvbbit-ghost"
+url: "https://github.com/buter-chkalova/rvbbit-ghost"
+license: MIT
+keywords:
+  - privacy research
+  - Whonix
+  - Tor
+  - OpenVPN
+  - Windows
+  - VirtualBox

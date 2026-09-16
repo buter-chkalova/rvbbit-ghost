@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible Rvbbit Ghost defect without including secrets.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never attach VPN profiles, credentials, VM disks, browser data, IP addresses or full logs containing private data.
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and edition
+    validations:
+      required: true
+  - type: input
+    id: virtualbox
+    attributes:
+      label: VirtualBox version
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
+

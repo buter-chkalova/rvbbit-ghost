@@ -1,0 +1,25 @@
+# Runtime payloads and secrets must never be committed.
+runtime/
+downloads/
+sessions/
+*.ova
+*.ovf
+*.vdi
+*.vmdk
+*.vhd
+*.ovpn
+*.key
+*.p12
+*.pfx
+auth.txt
+state.json
+*.partial
+
+# Tooling
+.vscode/
+.idea/
+*.log
+*.tmp
+Thumbs.db
+Desktop.ini
+

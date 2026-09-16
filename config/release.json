@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "whonix": {
+    "version": "18.2.1.9",
+    "imageUrl": "https://www.whonix.org/download/ova/18.2.1.9/Whonix-LXQt-18.2.1.9.Intel_AMD64.ova",
+    "signatureUrl": "https://www.whonix.org/download/ova/18.2.1.9/Whonix-LXQt-18.2.1.9.Intel_AMD64.ova.asc",
+    "keyUrl": "https://www.whonix.org/keys/derivative.asc",
+    "signingKeyFingerprint": "916B8D99C38EAF5E8ADC7A2A8D66066A2EEACCDA"
+  },
+  "dependencies": {
+    "virtualBoxWingetId": "Oracle.VirtualBox",
+    "gpgWingetId": "GnuPG.Gpg4win",
+    "minimumVirtualBoxVersion": "7.0"
+  },
+  "vpn": {
+    "required": true,
+    "mode": "openvpn-before-tor",
+    "interface": "tun0",
+    "failClosedControl": "Whonix TUNNEL_FIREWALL",
+    "officialGuide": "https://www.whonix.org/wiki/Tunnels/Connecting_to_a_VPN_before_Tor"
+  }
+}
