@@ -4,7 +4,7 @@
 
 - `Install-RvbbitGhost.ps1` installs/detects dependencies, downloads the pinned Whonix appliance, verifies its OpenPGP signature, imports and isolates the base VMs.
 - `Initialize-RvbbitGhost.ps1` opens the base pair for first-run setup, mandatory OpenVPN-before-Tor configuration, updates and a fail-closed test. It snapshots only after explicit operator attestation.
-- `Start-RvbbitGhost.ps1` creates linked clones, assigns a per-session internal network, reapplies isolation settings, starts Gateway then Workstation, and deletes both clones on exit.
+- `Start-RvbbitGhost.ps1` creates linked clones, assigns a per-session internal network, reapplies isolation settings, starts Gateway, requires a live operator readiness check, then starts Workstation and deletes both clones on exit.
 - `Stop-RvbbitGhost.ps1` performs crash recovery and disposal.
 - `Update-CleanBase.ps1` creates a new clean snapshot after maintenance and another VPN fail-closed attestation.
 - `Audit-RvbbitGhost.ps1` performs a read-only pre-engagement check of host-visible security invariants.
@@ -49,4 +49,10 @@ VirtualBox and Gpg4win are installed through exact winget package IDs. The Windo
 
 ## Recovery
 
-State is written atomically after each clone registration. If the launcher exits unexpectedly, the next start refuses to overlap a running session. `Stop-RvbbitGhost.ps1 -Force` uses the saved names and UUIDs, attempts ACPI shutdown, then powers off and unregisters only the session VMs.
+State is migrated from schema 1 when necessary and replaced atomically after each clone registration and cleanup checkpoint. A named cross-process mutex serializes state and VM mutations. The launcher releases the mutex while an established session is running so `Stop-RvbbitGhost.ps1` can perform emergency cleanup; another launcher still refuses to overlap the registered session.
+
+If cleanup removes Workstation but fails while removing Gateway, the state checkpoint preserves the remaining Gateway identity for the next recovery attempt. `Stop-RvbbitGhost.ps1 -Force` uses the saved names and UUIDs, attempts ACPI shutdown, then powers off and unregisters only the session VMs.
+
+## Readiness boundary
+
+VirtualBox can report that Gateway is running, but the Windows host cannot independently prove the in-guest OpenVPN, `tun0`, TUNNEL_FIREWALL, and Tor state without adding a guest-control channel. Rvbbit Ghost therefore waits for the VM state and requires a fresh operator-confirmed live check before Workstation starts. Documentation and output deliberately describe this as an operator gate, not automated tunnel attestation.

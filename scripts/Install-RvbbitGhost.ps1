@@ -11,6 +11,8 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $projectRoot 'src\RvbbitGhost.psm1') -Force
+$operationLock = Enter-RgOperationLock -OperationName 'install' -TimeoutSeconds 30
+try {
 $release = Get-Content -LiteralPath (Join-Path $projectRoot 'config\release.json') -Raw | ConvertFrom-Json
 
 Assert-RgWindows
@@ -111,10 +113,12 @@ Set-RgVmIsolation -Vm $workstationBaseName
 $gateway = Get-RgVmList | Where-Object { $_.Name -eq $gatewayBaseName } | Select-Object -First 1
 $workstation = Get-RgVmList | Where-Object { $_.Name -eq $workstationBaseName } | Select-Object -First 1
 $state = [pscustomobject]@{
-    schemaVersion = 1
-    projectVersion = '0.1.0'
+    schemaVersion = 2
+    projectVersion = '0.2.0'
     status = 'imported'
     installedAtUtc = [DateTime]::UtcNow.ToString('o')
+    initializedAtUtc = $null
+    updatedAtUtc = $null
     whonixVersion = $release.whonix.version
     dependencies = [pscustomobject]@{
         virtualBoxInstalledByProject = $virtualBoxInstalledByProject
@@ -130,6 +134,8 @@ $state = [pscustomobject]@{
         interface = $release.vpn.interface
         providerConfigured = $false
         attestedAtUtc = $null
+        lastVerifiedAtUtc = $null
+        verificationMethod = 'operator-confirmed-live-check'
     }
     session = $null
 }
@@ -147,3 +153,7 @@ if ($SkipInitialization) {
 }
 
 & (Join-Path $PSScriptRoot 'Initialize-RvbbitGhost.ps1')
+}
+finally {
+    Exit-RgOperationLock -Lock $operationLock
+}

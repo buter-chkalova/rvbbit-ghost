@@ -6,6 +6,8 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $projectRoot 'src\RvbbitGhost.psm1') -Force
+$operationLock = Enter-RgOperationLock -OperationName 'clean-base maintenance' -TimeoutSeconds 30
+try {
 $state = Get-RgState
 Assert-RgBaseIntegrity -State $state
 
@@ -20,8 +22,9 @@ The previous clean snapshots are retained as rollback points.
 
 Start-RgBaseForMaintenance -State $state
 Wait-RgBaseShutdown -State $state
-$answer = Read-Host 'Type VPN-READY only if OpenVPN and the fail-closed test succeeded'
-if ($answer -cne 'VPN-READY') {
+$challenge = 'VPN-' + [guid]::NewGuid().ToString('N').Substring(0, 8).ToUpperInvariant()
+$answer = Read-Host "Type $challenge only if OpenVPN and the fail-closed test succeeded"
+if ($answer -cne $challenge) {
     throw 'VPN readiness was not confirmed. The previous active clean snapshot remains selected.'
 }
 Set-RgVmIsolation -Vm $state.base.gateway.name
@@ -30,7 +33,14 @@ $snapshot = New-RgCleanSnapshot -GatewayVm $state.base.gateway.name -Workstation
 $state.base.gateway.snapshot = $snapshot
 $state.base.workstation.snapshot = $snapshot
 $state.vpn.providerConfigured = $true
-$state.vpn.attestedAtUtc = [DateTime]::UtcNow.ToString('o')
-$state.updatedAtUtc = [DateTime]::UtcNow.ToString('o')
+$verifiedAtUtc = [DateTime]::UtcNow.ToString('o')
+$state.vpn.attestedAtUtc = $verifiedAtUtc
+$state.vpn.lastVerifiedAtUtc = $verifiedAtUtc
+$state.vpn.verificationMethod = 'operator-confirmed-live-check'
+$state.updatedAtUtc = $verifiedAtUtc
 Save-RgState -State $state
 Write-RgInfo "The active clean base is now '$snapshot'. Older snapshots were retained."
+}
+finally {
+    Exit-RgOperationLock -Lock $operationLock
+}

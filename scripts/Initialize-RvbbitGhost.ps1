@@ -6,6 +6,8 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $projectRoot 'src\RvbbitGhost.psm1') -Force
+$operationLock = Enter-RgOperationLock -OperationName 'initialize' -TimeoutSeconds 30
+try {
 $state = Get-RgState
 
 if ($state.status -eq 'ready') {
@@ -45,8 +47,9 @@ This console will wait and then create the clean snapshots.
 
 Start-RgBaseForMaintenance -State $state
 Wait-RgBaseShutdown -State $state
-$answer = Read-Host 'Type VPN-READY only if OpenVPN-before-Tor AND its fail-closed test both succeeded'
-if ($answer -cne 'VPN-READY') {
+$challenge = 'VPN-' + [guid]::NewGuid().ToString('N').Substring(0, 8).ToUpperInvariant()
+$answer = Read-Host "Type $challenge only if OpenVPN-before-Tor AND its fail-closed test both succeeded"
+if ($answer -cne $challenge) {
     throw 'VPN readiness was not confirmed. No clean snapshot was created. Rerun initialization after fixing the VPN setup.'
 }
 Set-RgVmIsolation -Vm $state.base.gateway.name
@@ -56,8 +59,15 @@ $state.base.gateway.snapshot = $snapshot
 $state.base.workstation.snapshot = $snapshot
 $state.status = 'ready'
 $state.vpn.providerConfigured = $true
-$state.vpn.attestedAtUtc = [DateTime]::UtcNow.ToString('o')
-$state.initializedAtUtc = [DateTime]::UtcNow.ToString('o')
+$verifiedAtUtc = [DateTime]::UtcNow.ToString('o')
+$state.vpn.attestedAtUtc = $verifiedAtUtc
+$state.vpn.lastVerifiedAtUtc = $verifiedAtUtc
+$state.vpn.verificationMethod = 'operator-confirmed-live-check'
+$state.initializedAtUtc = $verifiedAtUtc
 Save-RgState -State $state
 
 Write-RgInfo "Clean VPN-before-Tor base snapshot '$snapshot' was created. Run Start-RvbbitGhost.ps1 for disposable browsing sessions."
+}
+finally {
+    Exit-RgOperationLock -Lock $operationLock
+}

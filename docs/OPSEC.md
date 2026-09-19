@@ -46,7 +46,7 @@ Perform this test after installation, after every VPN change, and before sensiti
 5. Start OpenVPN and wait for `tun0`.
 6. Restart or reload Tor if required and confirm connectivity.
 
-Do not type `VPN-READY` and do not continue the engagement if step 4 fails.
+Do not enter the one-time readiness challenge and do not continue the engagement if step 4 fails.
 
 ## Session closeout
 
@@ -55,4 +55,3 @@ Do not type `VPN-READY` and do not continue the engagement if step 4 fails.
 3. Shut down Workstation from inside the guest.
 4. Keep the launcher open until it confirms that both disposable VMs were deleted.
 5. If interrupted, run `Stop-RvbbitGhost.ps1 -Force` and then `Audit-RvbbitGhost.ps1` before the next session.
-

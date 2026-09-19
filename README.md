@@ -1,6 +1,6 @@
 # Rvbbit Ghost
 > [!NOTE]
-> Project status: experimental research prototype. Static security checks pass, but end-to-end behavior depends on the Windows host, VirtualBox version, Whonix version, VPN provider, and operator configuration.
+> Project status: experimental research prototype. Static and mocked behavior checks pass, but end-to-end behavior depends on the Windows host, VirtualBox version, Whonix version, VPN provider, and operator configuration.
 [![CI](https://github.com/buter-chkalova/rvbbit-ghost/actions/workflows/ci.yml/badge.svg)](https://github.com/buter-chkalova/rvbbit-ghost/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)](#requirements)
@@ -36,6 +36,8 @@ Whonix-Workstation has no direct Internet adapter. Each session is built as a pa
 - Removes session VMs and differencing disks after shutdown.
 - Detects and removes orphaned project session VMs after interrupted launches.
 - Validates VM names and UUIDs before any destructive cleanup.
+- Serializes installation, launch, stop, maintenance, audit, and uninstall mutations with a cross-process lock.
+- Migrates existing state to the current schema and replaces `state.json` atomically.
 - Leaves unrelated VirtualBox profiles and host documents untouched.
 
 ## Visibility by observer
@@ -76,7 +78,7 @@ Whonix officially supports VirtualBox on Windows, but its documentation recommen
    - restart OpenVPN and verify Tor again.
 5. Update both Whonix VMs and install or update Tor Browser with Tor Browser Downloader.
 6. Shut down Workstation, then Gateway, from inside the guest operating systems.
-7. Type `VPN-READY` only after the fail-closed test succeeds. The launcher then creates clean snapshots.
+7. Enter the one-time challenge shown by the initializer only after the fail-closed test succeeds. The launcher then creates clean snapshots.
 
 VPN setup cannot be safely hard-coded: profiles, certificates, endpoints, and authentication differ by provider, and secrets must never be committed to a public repository.
 
@@ -88,11 +90,11 @@ Before an assessment, run:
 .\scripts\Audit-RvbbitGhost.ps1
 ```
 
-The audit checks the pinned release configuration, base VM identity, clean snapshots, power state, network adapters, host-integration controls, and VPN attestation. It cannot inspect the live VPN tunnel from the Windows host without weakening guest isolation. Repeat the in-guest VPN disconnect test before every sensitive engagement.
+The audit checks the pinned release configuration, base VM identity, clean snapshots, power state, network adapters, host-integration controls, and VPN attestation. A missing required VirtualBox setting, invalid timestamp, or clean-base attestation older than 30 days fails the audit. It cannot inspect the live VPN tunnel from the Windows host without weakening guest isolation.
 
 ## Starting a session
 
-Run `Start.cmd`. The launcher creates a new Gateway and Workstation pair, reapplies the network and host-integration policy, starts Gateway first, and then opens Workstation.
+Run `Start.cmd`. The launcher creates a new Gateway and Workstation pair, reapplies the network and host-integration policy, starts Gateway first, and waits for it to reach the running state. Workstation remains powered off until the operator performs the live OpenVPN, `tun0`, Tor, and fail-closed checks in Gateway and enters the one-time challenge. This gate records an operator confirmation; it is not host-side proof of the guest tunnel.
 
 Use only Tor Browser inside Workstation. Shut down Workstation from its guest menu when finished. The launcher then stops Gateway and deletes both session VMs and their differencing disks.
 
@@ -140,7 +142,7 @@ VirtualBox is retained if the normal VirtualBox profile contains unrelated regis
 .\scripts\Test-RvbbitGhost.ps1
 ```
 
-The test suite parses every PowerShell file and checks pinned release metadata, official download origins, and critical isolation invariants.
+The test suite parses every PowerShell file, checks pinned release metadata, official download origins, and critical isolation invariants, and exercises state migration, atomic persistence, lock contention, audit failures, signature rejection, and partial-cleanup recovery. VirtualBox and Whonix end-to-end validation still requires a configured Windows test host.
 
 ## Explicit limitations
 

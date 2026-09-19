@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use Rvbbit Ghost in published research, cite this repository."
 title: "Rvbbit Ghost"
 type: software
-version: 0.1.0
-date-released: 2026-09-17
+version: 0.2.0
+date-released: 2026-09-19
 authors:
   - name: "buter-chkalova"
     website: "https://github.com/buter-chkalova"

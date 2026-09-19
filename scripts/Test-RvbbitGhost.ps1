@@ -59,8 +59,27 @@ foreach ($required in @(
 }
 
 $auditText = Get-Content -LiteralPath (Join-Path $projectRoot 'scripts\Audit-RvbbitGhost.ps1') -Raw -Encoding UTF8
-foreach ($required in @("'nic1' -Allowed @('intnet')", "'nic1' -Allowed @('nat')", 'OpenVPN disconnect test')) {
+foreach ($required in @("'nic1' -Allowed @('intnet')", "'nic1' -Allowed @('nat')", 'Assert-RgVmSetting')) {
     Assert-Check ($auditText.Contains($required)) "Required audit control is missing: $required"
+}
+
+$startText = Get-Content -LiteralPath (Join-Path $projectRoot 'scripts\Start-RvbbitGhost.ps1') -Raw -Encoding UTF8
+foreach ($required in @('Wait-RgVmRunning', 'Request-RgGatewayReadinessConfirmation', 'Enter-RgOperationLock')) {
+    Assert-Check ($startText.Contains($required)) "Required launch safety control is missing: $required"
+}
+
+foreach ($relativePath in @(
+    'scripts\Install-RvbbitGhost.ps1',
+    'scripts\Initialize-RvbbitGhost.ps1',
+    'scripts\Start-RvbbitGhost.ps1',
+    'scripts\Stop-RvbbitGhost.ps1',
+    'scripts\Update-CleanBase.ps1',
+    'scripts\Audit-RvbbitGhost.ps1',
+    'scripts\Uninstall-RvbbitGhost.ps1'
+)) {
+    $operationText = Get-Content -LiteralPath (Join-Path $projectRoot $relativePath) -Raw -Encoding UTF8
+    Assert-Check ($operationText.Contains('Enter-RgOperationLock')) "Operation lock acquisition is missing: $relativePath"
+    Assert-Check ($operationText.Contains('Exit-RgOperationLock')) "Operation lock release is missing: $relativePath"
 }
 
 $readme = Get-Content -LiteralPath (Join-Path $projectRoot 'README.md') -Raw -Encoding UTF8
@@ -90,4 +109,5 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Host "All $($scriptFiles.Count) PowerShell files parsed successfully; security invariants passed." -ForegroundColor Green
+& (Join-Path $projectRoot 'tests\Behavior.Tests.ps1')
+Write-Host "All $($scriptFiles.Count) PowerShell files parsed successfully; static invariants and behavior tests passed." -ForegroundColor Green

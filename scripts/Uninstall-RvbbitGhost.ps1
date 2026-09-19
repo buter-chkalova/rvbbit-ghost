@@ -9,6 +9,8 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $projectRoot 'src\RvbbitGhost.psm1') -Force
+$operationLock = Enter-RgOperationLock -OperationName 'uninstall' -TimeoutSeconds 120
+try {
 $state = Get-RgState
 $runtimeRoot = [IO.Path]::GetFullPath((Get-RgRuntimeRoot))
 $expectedRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'RvbbitGhost'))
@@ -61,4 +63,8 @@ if ($RemoveDependencies) {
             'uninstall', '--id', 'GnuPG.Gpg4win', '--exact', '--silent', '--disable-interactivity'
         ) -AllowFailure | Out-Null
     }
+}
+}
+finally {
+    Exit-RgOperationLock -Lock $operationLock
 }
