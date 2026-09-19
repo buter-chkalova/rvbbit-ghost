@@ -44,17 +44,25 @@ function Test-Setting {
         [Parameter(Mandatory)][string]$Vm
     )
 
-    if (-not $Info.ContainsKey($Key)) {
-        Add-AuditWarning "$Vm did not report '$Key'; verify this control in the VirtualBox UI."
-        return
+    try {
+        Assert-RgVmSetting -Info $Info -Key $Key -Allowed $Allowed -Vm $Vm
     }
-    if ($Info[$Key] -notin $Allowed) {
-        Add-AuditFailure "$Vm has unsafe $Key=$($Info[$Key]); expected $($Allowed -join ' or ')."
+    catch {
+        Add-AuditFailure $_.Exception.Message
     }
 }
 
+$operationLock = Enter-RgOperationLock -OperationName 'audit' -TimeoutSeconds 30
+try {
 Assert-RgWindows
 $state = Get-RgState
+$release = Get-Content -LiteralPath (Join-Path $projectRoot 'config\release.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($state.whonixVersion -ne $release.whonix.version) {
+    Add-AuditFailure "Installed Whonix version '$($state.whonixVersion)' differs from pinned release '$($release.whonix.version)'."
+}
+if (-not $state.vpn.required -or $state.vpn.mode -ne $release.vpn.mode -or $state.vpn.interface -ne $release.vpn.interface) {
+    Add-AuditFailure 'Installed VPN policy differs from the pinned release configuration.'
+}
 try {
     Assert-RgBaseIntegrity -State $state
 }
@@ -83,9 +91,14 @@ elseif ($null -eq $state.vpn.attestedAtUtc) {
     Add-AuditFailure 'VPN attestation has no timestamp.'
 }
 else {
-    $attested = [DateTime]::Parse($state.vpn.attestedAtUtc).ToUniversalTime()
-    if ($attested -lt [DateTime]::UtcNow.AddDays(-30)) {
-        Add-AuditWarning "The last VPN fail-closed attestation is older than 30 days: $($attested.ToString('u'))"
+    try {
+        $attested = [DateTime]::Parse($state.vpn.attestedAtUtc).ToUniversalTime()
+        if ($attested -lt [DateTime]::UtcNow.AddDays(-30)) {
+            Add-AuditFailure "The last clean-base VPN fail-closed attestation is older than 30 days: $($attested.ToString('u'))"
+        }
+    }
+    catch {
+        Add-AuditFailure "VPN attestation timestamp is invalid: $($state.vpn.attestedAtUtc)"
     }
 }
 
@@ -135,6 +148,9 @@ if ($failures.Count -gt 0) {
 }
 
 Write-Host 'Host-visible Rvbbit Ghost controls passed.' -ForegroundColor Green
-Write-Host 'The Windows host cannot verify the in-guest VPN tunnel without weakening isolation.' -ForegroundColor Yellow
-Write-Host 'Repeat the OpenVPN disconnect test inside Whonix-Gateway before the engagement.' -ForegroundColor Yellow
+Write-Host 'In-guest VPN and Tor readiness is not host-verifiable; Start requires a live operator check before Workstation opens.' -ForegroundColor Yellow
+}
+finally {
+    Exit-RgOperationLock -Lock $operationLock
+}
 

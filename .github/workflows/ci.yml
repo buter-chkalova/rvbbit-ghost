@@ -12,7 +12,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run security invariant tests
+      - name: Run static and behavior tests
         shell: pwsh
         run: ./scripts/Test-RvbbitGhost.ps1
 

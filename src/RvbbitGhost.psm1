@@ -1,7 +1,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:ProjectVersion = '0.1.0'
+$script:ProjectVersion = '0.2.0'
+$script:StateSchemaVersion = 2
 $script:RuntimeRoot = Join-Path $env:LOCALAPPDATA 'RvbbitGhost'
 $script:StatePath = Join-Path $script:RuntimeRoot 'state.json'
 $script:VBoxHome = Join-Path $script:RuntimeRoot 'virtualbox-home'
@@ -58,21 +59,140 @@ function New-RgDirectory {
     }
 }
 
+function Add-RgNoteProperty {
+    param(
+        [Parameter(Mandatory)]$InputObject,
+        [Parameter(Mandatory)][string]$Name,
+        $Value
+    )
+
+    if ($null -eq $InputObject.PSObject.Properties[$Name]) {
+        $InputObject | Add-Member -MemberType NoteProperty -Name $Name -Value $Value
+    }
+}
+
+function Repair-RgStateSchema {
+    param([Parameter(Mandatory)]$State)
+
+    Add-RgNoteProperty -InputObject $State -Name 'schemaVersion' -Value 1
+    $schemaVersion = [int]$State.schemaVersion
+    if ($schemaVersion -lt 1 -or $schemaVersion -gt $script:StateSchemaVersion) {
+        throw "Unsupported state schema version: $schemaVersion"
+    }
+
+    Add-RgNoteProperty -InputObject $State -Name 'initializedAtUtc' -Value $null
+    Add-RgNoteProperty -InputObject $State -Name 'updatedAtUtc' -Value $null
+    Add-RgNoteProperty -InputObject $State -Name 'projectVersion' -Value $script:ProjectVersion
+    if ($null -ne $State.vpn) {
+        Add-RgNoteProperty -InputObject $State.vpn -Name 'lastVerifiedAtUtc' -Value $null
+        Add-RgNoteProperty -InputObject $State.vpn -Name 'verificationMethod' -Value 'operator-confirmed-live-check'
+    }
+
+    $State.schemaVersion = $script:StateSchemaVersion
+    $State.projectVersion = $script:ProjectVersion
+    return $State
+}
+
 function Get-RgState {
     if (-not (Test-Path -LiteralPath $script:StatePath -PathType Leaf)) {
         throw "Rvbbit Ghost is not installed. Run scripts\Install-RvbbitGhost.ps1 first."
     }
 
-    return Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json
+    try {
+        $state = Get-Content -LiteralPath $script:StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        throw "Rvbbit Ghost state is unreadable or invalid: $($_.Exception.Message)"
+    }
+
+    return Repair-RgStateSchema -State $state
 }
 
 function Save-RgState {
     param([Parameter(Mandatory)]$State)
 
     New-RgDirectory -Path $script:RuntimeRoot
-    $temporaryPath = "$script:StatePath.tmp"
-    $State | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
-    Move-Item -LiteralPath $temporaryPath -Destination $script:StatePath -Force
+    $State = Repair-RgStateSchema -State $State
+    $transactionId = [guid]::NewGuid().ToString('N')
+    $temporaryPath = Join-Path $script:RuntimeRoot ('.state-' + $transactionId + '.tmp')
+    $backupPath = Join-Path $script:RuntimeRoot ('.state-' + $transactionId + '.bak')
+    $encoding = [Text.UTF8Encoding]::new($false)
+    try {
+        [IO.File]::WriteAllText($temporaryPath, ($State | ConvertTo-Json -Depth 12), $encoding)
+        if (Test-Path -LiteralPath $script:StatePath -PathType Leaf) {
+            [IO.File]::Replace($temporaryPath, $script:StatePath, $backupPath, $true)
+        }
+        else {
+            [IO.File]::Move($temporaryPath, $script:StatePath)
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+            Remove-Item -LiteralPath $backupPath -Force
+        }
+    }
+}
+
+function Get-RgOperationMutexName {
+    $normalizedRoot = [IO.Path]::GetFullPath($script:RuntimeRoot).ToUpperInvariant()
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = [BitConverter]::ToString($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalizedRoot))).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    return "Local\RvbbitGhost-Operation-$($hash.Substring(0, 24))"
+}
+
+function Enter-RgOperationLock {
+    param(
+        [Parameter(Mandatory)][string]$OperationName,
+        [ValidateRange(0, 3600)][int]$TimeoutSeconds = 30
+    )
+
+    $mutex = [Threading.Mutex]::new($false, (Get-RgOperationMutexName))
+    $acquired = $false
+    try {
+        try {
+            $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds($TimeoutSeconds))
+        }
+        catch [Threading.AbandonedMutexException] {
+            $acquired = $true
+            Write-RgWarn 'Recovered the operation lock after an interrupted Rvbbit Ghost process.'
+        }
+
+        if (-not $acquired) {
+            throw "Another Rvbbit Ghost operation is active. '$OperationName' could not acquire the operation lock within $TimeoutSeconds seconds."
+        }
+
+        return [pscustomobject]@{
+            Mutex = $mutex
+            OperationName = $OperationName
+            Released = $false
+        }
+    }
+    catch {
+        if (-not $acquired) {
+            $mutex.Dispose()
+        }
+        throw
+    }
+}
+
+function Exit-RgOperationLock {
+    param($Lock)
+
+    if ($null -eq $Lock -or $Lock.Released) {
+        return
+    }
+
+    $Lock.Mutex.ReleaseMutex()
+    $Lock.Mutex.Dispose()
+    $Lock.Released = $true
 }
 
 function Get-RgVBoxManage {
@@ -140,7 +260,9 @@ function Invoke-RgExternal {
 function Invoke-RgVBox {
     param(
         [Parameter(Mandatory)][string[]]$Arguments,
-        [switch]$AllowFailure
+        [switch]$AllowFailure,
+        [switch]$RetryOnBusy,
+        [ValidateRange(1, 60)][int]$BusyTimeoutSeconds = 15
     )
 
     New-RgDirectory -Path $script:VBoxHome
@@ -148,7 +270,30 @@ function Invoke-RgVBox {
     # of mixing them with the user's normal VirtualBox profile.
     $env:VBOX_USER_HOME = $script:VBoxHome
     $vbox = Get-RgVBoxManage
-    return Invoke-RgExternal -FilePath $vbox -Arguments $Arguments -AllowFailure:$AllowFailure
+    if (-not $RetryOnBusy) {
+        return Invoke-RgExternal -FilePath $vbox -Arguments $Arguments -AllowFailure:$AllowFailure
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($BusyTimeoutSeconds)
+    do {
+        $result = Invoke-RgExternal -FilePath $vbox -Arguments $Arguments -AllowFailure
+        if ($result.ExitCode -eq 0) {
+            return $result
+        }
+        if (-not (Test-RgVBoxBusyError -Output $result.Output) -or [DateTime]::UtcNow -ge $deadline) {
+            if ($AllowFailure) {
+                return $result
+            }
+            throw "Command failed with exit code $($result.ExitCode).`nFile: $vbox`nArguments: $($Arguments -join ' ')`n$($result.Output)"
+        }
+        Start-Sleep -Milliseconds 500
+    } while ($true)
+}
+
+function Test-RgVBoxBusyError {
+    param([Parameter(Mandatory)][string]$Output)
+
+    return $Output -match '(?i)(VBOX_E_OBJECT_IN_USE|failed to assign the machine to the session|machine .* is already locked)'
 }
 
 function Install-RgWingetPackage {
@@ -237,7 +382,7 @@ function Test-RgVmExists {
 function Get-RgVmState {
     param([Parameter(Mandatory)][string]$Vm)
 
-    $result = Invoke-RgVBox -Arguments @('showvminfo', $Vm, '--machinereadable')
+    $result = Invoke-RgVBox -Arguments @('showvminfo', $Vm, '--machinereadable') -RetryOnBusy
     foreach ($line in ($result.Output -split "`r?`n")) {
         if ($line -match '^VMState="([^"]+)"$') {
             return $Matches[1]
@@ -262,6 +407,53 @@ function Wait-RgVmStopped {
     } while ([DateTime]::UtcNow -lt $deadline)
 
     return Get-RgVmState -Vm $Vm
+}
+
+function Wait-RgVmRunning {
+    param(
+        [Parameter(Mandatory)][string]$Vm,
+        [ValidateRange(5, 600)][int]$TimeoutSeconds = 120
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $state = Get-RgVmState -Vm $Vm
+        if ($state -eq 'running') {
+            return
+        }
+        if ($state -in @('poweroff', 'aborted', 'saved')) {
+            throw "VM '$Vm' entered state '$state' before it became ready for operator verification."
+        }
+        Start-Sleep -Seconds 2
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "VM '$Vm' did not reach the running state within $TimeoutSeconds seconds."
+}
+
+function Request-RgGatewayReadinessConfirmation {
+    param([Parameter(Mandatory)][string]$GatewayVm)
+
+    if ((Get-RgVmState -Vm $GatewayVm) -ne 'running') {
+        throw "Gateway VM '$GatewayVm' is not running."
+    }
+
+    $challenge = 'READY-' + [guid]::NewGuid().ToString('N').Substring(0, 8).ToUpperInvariant()
+    Write-Host @'
+
+Before Workstation is allowed to start, verify inside this session's Gateway:
+  1. openvpn@openvpn is active and tun0 exists.
+  2. Tor reports a successful connection through the VPN.
+  3. Stop OpenVPN and confirm Tor loses connectivity (fail-closed).
+  4. Start OpenVPN again, wait for tun0, and confirm Tor reconnects.
+
+This is a live operator gate, not host-side proof of the guest tunnel.
+'@ -ForegroundColor Yellow
+    $answer = Read-Host "Type $challenge only after all four checks succeed"
+    if ($answer -cne $challenge) {
+        throw 'Gateway readiness was not confirmed. Workstation will not be started.'
+    }
+
+    return [DateTime]::UtcNow.ToString('o')
 }
 
 function Stop-RgVm {
@@ -302,7 +494,7 @@ function Stop-RgVm {
 function Remove-RgSharedFolders {
     param([Parameter(Mandatory)][string]$Vm)
 
-    $result = Invoke-RgVBox -Arguments @('showvminfo', $Vm, '--machinereadable')
+    $result = Invoke-RgVBox -Arguments @('showvminfo', $Vm, '--machinereadable') -RetryOnBusy
     $names = @()
     foreach ($line in ($result.Output -split "`r?`n")) {
         if ($line -match '^SharedFolderNameMachineMapping\d+="([^"]+)"$') {
@@ -310,7 +502,7 @@ function Remove-RgSharedFolders {
         }
     }
     foreach ($name in $names) {
-        Invoke-RgVBox -Arguments @('sharedfolder', 'remove', $Vm, '--name', $name) | Out-Null
+        Invoke-RgVBox -Arguments @('sharedfolder', 'remove', $Vm, '--name', $name) -RetryOnBusy | Out-Null
     }
 }
 
@@ -331,7 +523,7 @@ function Set-RgVmIsolation {
         '--vrde', 'off',
         '--recording', 'off'
     )
-    Invoke-RgVBox -Arguments $arguments | Out-Null
+    Invoke-RgVBox -Arguments $arguments -RetryOnBusy | Out-Null
     Remove-RgSharedFolders -Vm $Vm
 }
 
@@ -351,8 +543,8 @@ function Set-RgSessionNetwork {
         $workstationArgs += @("--nic$index", 'none')
     }
 
-    Invoke-RgVBox -Arguments $gatewayArgs | Out-Null
-    Invoke-RgVBox -Arguments $workstationArgs | Out-Null
+    Invoke-RgVBox -Arguments $gatewayArgs -RetryOnBusy | Out-Null
+    Invoke-RgVBox -Arguments $workstationArgs -RetryOnBusy | Out-Null
 }
 
 function Invoke-RgDownload {
@@ -400,15 +592,7 @@ function Test-RgWhonixSignature {
         '--batch', '--homedir', $gpgHome, '--with-colons',
         '--import-options', 'show-only', '--import', $KeyPath
     )
-    $fingerprints = @()
-    foreach ($line in ($inspect.Output -split "`r?`n")) {
-        if ($line -match '^fpr:::::::::([0-9A-Fa-f]+):') {
-            $fingerprints += $Matches[1].ToUpperInvariant()
-        }
-    }
-    if ($expected -notin $fingerprints) {
-        throw "The downloaded Whonix key does not contain the pinned fingerprint $expected."
-    }
+    Assert-RgGpgKeyFingerprint -InspectOutput $inspect.Output -ExpectedFingerprint $expected
 
     Invoke-RgExternal -FilePath $gpg -Arguments @('--batch', '--homedir', $gpgHome, '--import', $KeyPath) | Out-Null
     $verify = Invoke-RgExternal -FilePath $gpg -Arguments @(
@@ -416,8 +600,39 @@ function Test-RgWhonixSignature {
         '--verify', $SignaturePath, $ImagePath
     ) -AllowFailure
 
+    Assert-RgGpgSignatureStatus -VerifyOutput $verify.Output -ExitCode $verify.ExitCode -ExpectedFingerprint $expected
+
+    Write-RgInfo "Whonix image signature is valid for pinned key $expected."
+}
+
+function Assert-RgGpgKeyFingerprint {
+    param(
+        [Parameter(Mandatory)][string]$InspectOutput,
+        [Parameter(Mandatory)][string]$ExpectedFingerprint
+    )
+
+    $expected = ($ExpectedFingerprint -replace '\s', '').ToUpperInvariant()
+    $fingerprints = @()
+    foreach ($line in ($InspectOutput -split "`r?`n")) {
+        if ($line -match '^fpr:::::::::([0-9A-Fa-f]+):') {
+            $fingerprints += $Matches[1].ToUpperInvariant()
+        }
+    }
+    if ($expected -notin $fingerprints) {
+        throw "The downloaded Whonix key does not contain the pinned fingerprint $expected."
+    }
+}
+
+function Assert-RgGpgSignatureStatus {
+    param(
+        [Parameter(Mandatory)][string]$VerifyOutput,
+        [Parameter(Mandatory)][int]$ExitCode,
+        [Parameter(Mandatory)][string]$ExpectedFingerprint
+    )
+
+    $expected = ($ExpectedFingerprint -replace '\s', '').ToUpperInvariant()
     $validForPinnedKey = $false
-    foreach ($line in ($verify.Output -split "`r?`n")) {
+    foreach ($line in ($VerifyOutput -split "`r?`n")) {
         if ($line -match '^\[GNUPG:\] VALIDSIG (.+)$') {
             $fields = $Matches[1] -split '\s+'
             if ($expected -in ($fields | ForEach-Object { $_.ToUpperInvariant() })) {
@@ -425,11 +640,9 @@ function Test-RgWhonixSignature {
             }
         }
     }
-    if ($verify.ExitCode -ne 0 -or -not $validForPinnedKey) {
-        throw "Whonix image signature verification failed. The image will not be imported.`n$($verify.Output)"
+    if ($ExitCode -ne 0 -or -not $validForPinnedKey) {
+        throw "Whonix image signature verification failed. The image will not be imported.`n$VerifyOutput"
     }
-
-    Write-RgInfo "Whonix image signature is valid for pinned key $expected."
 }
 
 function Test-RgSnapshotExists {
@@ -437,7 +650,7 @@ function Test-RgSnapshotExists {
         [Parameter(Mandatory)][string]$Vm,
         [Parameter(Mandatory)][string]$Snapshot
     )
-    $result = Invoke-RgVBox -Arguments @('snapshot', $Vm, 'showvminfo', $Snapshot) -AllowFailure
+    $result = Invoke-RgVBox -Arguments @('snapshot', $Vm, 'showvminfo', $Snapshot) -AllowFailure -RetryOnBusy
     return $result.ExitCode -eq 0
 }
 
@@ -517,15 +730,23 @@ function Clear-RgSession {
     }
 
     $session = $State.session
+    if ($session.id -notmatch '^\d{8}T\d{6}Z-[0-9a-f]{8}$') {
+        throw "Refusing to remove a session directory with an unexpected identifier: $($session.id)"
+    }
+
     if ($null -ne $session.workstation -and (Test-RgVmExists -Name $session.workstation.name -Uuid $session.workstation.uuid)) {
         Remove-RgSessionVm -Name $session.workstation.name -Uuid $session.workstation.uuid -Force:$Force
+    }
+    if ($null -ne $session.workstation) {
+        $State.session.workstation = $null
+        Save-RgState -State $State
     }
     if ($null -ne $session.gateway -and (Test-RgVmExists -Name $session.gateway.name -Uuid $session.gateway.uuid)) {
         Remove-RgSessionVm -Name $session.gateway.name -Uuid $session.gateway.uuid -Force:$Force
     }
-
-    if ($session.id -notmatch '^\d{8}T\d{6}Z-[0-9a-f]{8}$') {
-        throw "Refusing to remove a session directory with an unexpected identifier: $($session.id)"
+    if ($null -ne $session.gateway) {
+        $State.session.gateway = $null
+        Save-RgState -State $State
     }
     $sessionsRoot = [IO.Path]::GetFullPath((Join-Path $script:RuntimeRoot 'sessions'))
     $sessionPath = [IO.Path]::GetFullPath((Join-Path $sessionsRoot $session.id))
@@ -573,8 +794,25 @@ function Start-RgBaseForMaintenance {
     }
 
     Invoke-RgVBox -Arguments @('startvm', $State.base.gateway.name, '--type', 'gui') | Out-Null
-    Start-Sleep -Seconds 15
+    Wait-RgVmRunning -Vm $State.base.gateway.name -TimeoutSeconds 120
     Invoke-RgVBox -Arguments @('startvm', $State.base.workstation.name, '--type', 'gui') | Out-Null
+    Wait-RgVmRunning -Vm $State.base.workstation.name -TimeoutSeconds 120
+}
+
+function Assert-RgVmSetting {
+    param(
+        [Parameter(Mandatory)][hashtable]$Info,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string[]]$Allowed,
+        [Parameter(Mandatory)][string]$Vm
+    )
+
+    if (-not $Info.ContainsKey($Key)) {
+        throw "$Vm did not report required setting '$Key'; the audit is incomplete."
+    }
+    if ($Info[$Key] -notin $Allowed) {
+        throw "$Vm has unsafe $Key=$($Info[$Key]); expected $($Allowed -join ' or ')."
+    }
 }
 
 function Wait-RgBaseShutdown {
@@ -613,11 +851,13 @@ function Assert-RgBaseIntegrity {
 Export-ModuleMember -Function @(
     'Write-RgInfo', 'Write-RgWarn', 'Get-RgRuntimeRoot', 'Get-RgStatePath', 'Get-RgVBoxHome',
     'Assert-RgWindows', 'New-RgDirectory', 'Get-RgState', 'Save-RgState',
+    'Enter-RgOperationLock', 'Exit-RgOperationLock',
     'Get-RgVBoxManage', 'Get-RgGpg', 'Invoke-RgExternal', 'Invoke-RgVBox',
     'Install-RgWingetPackage', 'Get-RgVirtualBoxVersion', 'Get-RgVmList', 'Get-RgDefaultVmList',
-    'Test-RgVmExists', 'Get-RgVmState', 'Wait-RgVmStopped', 'Stop-RgVm',
+    'Test-RgVmExists', 'Get-RgVmState', 'Wait-RgVmStopped', 'Wait-RgVmRunning', 'Stop-RgVm',
     'Set-RgVmIsolation', 'Set-RgSessionNetwork', 'Invoke-RgDownload',
     'Test-RgWhonixSignature', 'Test-RgSnapshotExists', 'New-RgCleanSnapshot',
     'New-RgLinkedClone', 'Remove-RgSessionVm', 'Clear-RgSession', 'Clear-RgOrphanSessionVms',
-    'Start-RgBaseForMaintenance', 'Wait-RgBaseShutdown', 'Assert-RgBaseIntegrity'
+    'Start-RgBaseForMaintenance', 'Wait-RgBaseShutdown', 'Assert-RgBaseIntegrity',
+    'Request-RgGatewayReadinessConfirmation', 'Assert-RgVmSetting'
 )

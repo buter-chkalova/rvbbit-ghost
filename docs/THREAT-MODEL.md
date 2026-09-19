@@ -42,6 +42,8 @@ The hypervisor manages guest memory, virtual disks, input, display, and networki
 8. Session VMs and differencing disks are unregistered and deleted after shutdown.
 9. Cleanup validates project-specific VM names and stored UUIDs.
 10. A pre-engagement audit verifies host-visible invariants without entering the guest.
+11. A cross-process lock serializes operations that mutate state or VirtualBox resources.
+12. Workstation does not start until Gateway is running and the operator completes a fresh in-guest readiness check.
 
 ## Observers
 
@@ -60,6 +62,8 @@ The provider sees the source address, account or payment linkage, timing, volume
 ### Windows and VirtualBox
 
 The host can observe VM processes, memory allocation, execution times, VPN endpoints, and traffic metadata. Windows may record PowerShell, process, crash, network, filesystem, and security-product events. VirtualBox creates configuration and diagnostic data. Project-scoped files are isolated and session VM files are removed, but Windows-level records remain.
+
+The live readiness check is operator-confirmed. It reduces the risk of launching Workstation before VPN and Tor are ready, but it does not turn the Windows host into an independent verifier of in-guest routing.
 
 ### Local post-session examiner
 
@@ -85,4 +89,3 @@ Windows has no verifiable "record nothing" mode. Disabling event collection, end
 ## Assurance ceiling
 
 Windows with a hosted VirtualBox hypervisor is not the highest-assurance platform for anonymity research. For higher-risk work, use dedicated hardware with Qubes-Whonix or a supported Linux host and keep the research system separate from personal devices. That architectural change provides more value than increasingly aggressive Windows modifications.
-
